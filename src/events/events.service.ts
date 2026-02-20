@@ -10,17 +10,14 @@ import { CreateEventDto } from './dto/create-event.dto';
 export class EventsService {
   constructor(
     @Inject(DATABASE_CONNECTION)
-    private db: NodePgDatabase<typeof schema>
+    private db: NodePgDatabase<typeof schema>,
   ) {}
 
-  // Create a new event with date conversion
+  // Create a new event
   async createEvent(data: CreateEventDto) {
     try {
-      // Validate recurrence consistency
-      if (data.recurrencePattern && data.recurrencePattern !== 'NONE') {
-        if (!data.recurrenceEndType) {
-          throw new BadRequestException('recurrenceEndType is required when pattern is not NONE');
-        }
+      if (data.recurrencePattern && data.recurrencePattern !== 'NONE' && !data.recurrenceEndType) {
+        throw new BadRequestException('recurrenceEndType is required when pattern is not NONE');
       }
 
       const eventWithDates = {
@@ -30,16 +27,9 @@ export class EventsService {
         recurrenceEndDate: data.recurrenceEndDate ? new Date(data.recurrenceEndDate) : null,
       };
 
-      // Ensure dates are valid after conversion
-      if ((eventWithDates.startsAt && isNaN(eventWithDates.startsAt.getTime())) || 
-          (eventWithDates.endsAt && isNaN(eventWithDates.endsAt.getTime()))) {
-        throw new BadRequestException('Invalid date format provided');
-      }
-
       return await this.db.insert(events).values(eventWithDates as any).returning();
     } catch (error) {
       if (error instanceof BadRequestException) throw error;
-      console.error('Error creating event:', error);
       throw new BadRequestException('Could not create event. Check your data format.');
     }
   }
@@ -49,28 +39,43 @@ export class EventsService {
     return await this.db.select().from(events);
   }
 
-  // Update an event by ID
+  // UPDATE Event (Fixed logic)
   async updateEvent(id: number, data: any) {
-    return await this.db
+    const updateData = { ...data };
+
+    // Remove ID if present in body to prevent Primary Key update errors
+    delete updateData.id;
+
+    // Handle date conversions for the update payload
+    if (updateData.startsAt) updateData.startsAt = new Date(updateData.startsAt);
+    if (updateData.endsAt) updateData.endsAt = new Date(updateData.endsAt);
+    if (updateData.recurrenceEndDate) updateData.recurrenceEndDate = new Date(updateData.recurrenceEndDate);
+
+    const result = await this.db
       .update(events)
-      .set({
-        ...data,
-        // Convert dates if provided in the update payload
-        startsAt: data.startsAt ? new Date(data.startsAt) : undefined,
-        endsAt: data.endsAt ? new Date(data.endsAt) : undefined,
-      })
+      .set(updateData)
       .where(eq(events.id, id))
       .returning();
+
+    // If result is empty, it means the ID doesn't exist
+    if (result.length === 0) {
+      throw new NotFoundException(`Event with ID ${id} not found`);
+    }
+
+    return result;
   }
 
-  // Delete an event by ID
+  // Delete an event
   async deleteEvent(id: number) {
-    return await this.db.delete(events).where(eq(events.id, id)).returning();
+    const result = await this.db.delete(events).where(eq(events.id, id)).returning();
+    if (result.length === 0) throw new NotFoundException(`Event with ID ${id} not found`);
+    return result;
   }
 
-  // Get a single event by ID
+  // Get single event
   async getEventById(id: number) {
     const result = await this.db.select().from(events).where(eq(events.id, id));
+    if (!result[0]) throw new NotFoundException(`Event with ID ${id} not found`);
     return result[0];
   }
 }
